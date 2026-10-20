@@ -46,18 +46,104 @@ fn get_uptime() -> String {
     "unknown".to_string()
 }
 
+fn count_xbps_packages() -> Option<String> {
+    // Void Linux / XBPS: каждый пакет имеет файл .<pkgname>-files.plist
+    let entries = fs::read_dir("/var/db/xbps").ok()?;
+    let count = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with('.') && name.ends_with("-files.plist")
+        })
+        .count();
+    Some(count.to_string())
+}
+
+fn count_pacman_packages() -> Option<String> {
+    // Arch Linux / Pacman: каждая папка в local = один пакет
+    let entries = fs::read_dir("/var/lib/pacman/local").ok()?;
+    let count = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name() != "ALPM_DB_VERSION"
+                && e.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
+        })
+        .count();
+    Some(count.to_string())
+}
+
+fn count_dpkg_packages() -> Option<String> {
+    // Debian / Ubuntu: считаем блоки со статусом installed
+    let content = fs::read_to_string("/var/lib/dpkg/status").ok()?;
+    let count = content
+        .split("\n\n")
+        .filter(|block| block.contains("Status: install ok installed"))
+        .count();
+    Some(count.to_string())
+}
+
+fn count_rpm_packages() -> Option<String> {
+    // Fedora / RHEL: считаем файлы Packages* в /var/lib/rpm
+    let entries = fs::read_dir("/var/lib/rpm").ok()?;
+    let count = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("Packages")
+        })
+        .count();
+    Some(count.to_string())
+}
+
 fn get_packages() -> String {
-    if let Ok(entries) = fs::read_dir("/var/lib/pacman/local") {
-        let count = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name() != "ALPM_DB_VERSION"
-                    && e.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
-            })
-            .count();
-        return count.to_string();
+    let os = get_os();
+    let os_lower = os.to_lowercase();
+
+    // Void Linux / XBPS
+    if os_lower == "void" || os_lower.contains("void") {
+        if let Some(n) = count_xbps_packages() {
+            return n;
+        }
     }
-    "unknown".to_string()
+
+    // Arch / Manjaro / Pacman
+    if matches!(
+        os_lower.as_str(),
+        "arch" | "manjaro" | "endeavouros" | "garuda" | "artix"
+    ) {
+        if let Some(n) = count_pacman_packages() {
+            return n;
+        }
+    }
+
+    // Debian / Ubuntu
+    if matches!(
+        os_lower.as_str(),
+        "debian" | "ubuntu" | "linuxmint" | "pop" | "kali" | "raspbian"
+    ) {
+        if let Some(n) = count_dpkg_packages() {
+            return n;
+        }
+    }
+
+    // Fedora / RHEL
+    if matches!(
+        os_lower.as_str(),
+        "fedora" | "rhel" | "centos" | "rocky" | "almalinux"
+    ) {
+        if let Some(n) = count_rpm_packages() {
+            return n;
+        }
+    }
+
+    // Фолбэк: пробуем все известные источники по очереди
+    count_xbps_packages()
+        .or_else(count_pacman_packages)
+        .or_else(count_dpkg_packages)
+        .or_else(count_rpm_packages)
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 // Раскрашиваем строчку пингвина по символам:
@@ -120,7 +206,8 @@ fn main() {
     let packages = get_packages();
 
     const EMBEDDED_ASCII: &str = include_str!("../ascii.txt");
-    let ascii_content = fs::read_to_string("ascii.txt").unwrap_or_else(|_| EMBEDDED_ASCII.to_string());
+    let ascii_content =
+        fs::read_to_string("ascii.txt").unwrap_or_else(|_| EMBEDDED_ASCII.to_string());
 
     let mut logo_lines: Vec<String> = ascii_content
         .lines()
@@ -131,7 +218,11 @@ fn main() {
         logo_lines.pop();
     }
 
-    let max_logo_width = logo_lines.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+    let max_logo_width = logo_lines
+        .iter()
+        .map(|s| s.chars().count())
+        .max()
+        .unwrap_or(0);
 
     let key = "\x1b[1m";
     let reset = "\x1b[0m";
